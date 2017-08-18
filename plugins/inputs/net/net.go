@@ -3,10 +3,15 @@ package net
 import (
 	"fmt"
 	"net"
+	"os"
+	"path"
+	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/influxdata/telegraf"
 	"github.com/influxdata/telegraf/filter"
+	"github.com/influxdata/telegraf/internal"
 	"github.com/influxdata/telegraf/plugins/inputs"
 	"github.com/influxdata/telegraf/plugins/inputs/system"
 )
@@ -42,6 +47,14 @@ func (_ *NetIOStats) SampleConfig() string {
 	return netSampleConfig
 }
 
+func GetHostSysFS() string {
+	sysPath := "/proc/sys"
+	if sys := os.Getenv("HOST_SYS"); sys != "" {
+		sysPath = sys
+	}
+	return sysPath
+}
+
 func (s *NetIOStats) Gather(acc telegraf.Accumulator) error {
 	netio, err := s.ps.NetIO()
 	if err != nil {
@@ -54,16 +67,17 @@ func (s *NetIOStats) Gather(acc telegraf.Accumulator) error {
 		}
 	}
 
-	interfaces, err := net.Interfaces()
+	interfaces, err := s.ps.NetInterfaces()
 	if err != nil {
 		return fmt.Errorf("error getting list of interfaces: %s", err)
 	}
-	interfacesByName := map[string]net.Interface{}
+	interfaces := map[string]s.ps.Interface{}
 	for _, iface := range interfaces {
-		interfacesByName[iface.Name] = iface
+		interfaces[iface.Name] = iface
 	}
 
 	for _, io := range netio {
+		var iface s.ps.NetInterface
 		if len(s.Interfaces) != 0 {
 			var found bool
 
@@ -75,7 +89,7 @@ func (s *NetIOStats) Gather(acc telegraf.Accumulator) error {
 				continue
 			}
 		} else if !s.skipChecks {
-			iface, ok := interfacesByName[io.Name]
+			iface, ok := interfaces[io.Name]
 			if !ok {
 				continue
 			}
@@ -91,6 +105,19 @@ func (s *NetIOStats) Gather(acc telegraf.Accumulator) error {
 
 		tags := map[string]string{
 			"interface": io.Name,
+			"state":     iface.state,
+			"mtu":       iface.MTU,
+		}
+
+		// the following are only supported on Linux, for now, so check they have been populated
+		if iface.duplex {
+			tags["duplex"] = iface.duplex
+		}
+		if iface.speed {
+			tags["speed"] = iface.speed
+		}
+		if iface.carrier {
+			tags["carrier"] = iface.carrier
 		}
 
 		fields := map[string]interface{}{
@@ -102,8 +129,46 @@ func (s *NetIOStats) Gather(acc telegraf.Accumulator) error {
 			"err_out":      io.Errout,
 			"drop_in":      io.Dropin,
 			"drop_out":     io.Dropout,
+			"mtu":          iface.MTU,
 		}
+
+		var state string
+		if iface.Flags&net.FlagUp > 0 {
+			state = "up"
+		} else {
+			state = "down"
+		}
+
+		// linux specific metrics from /sys
+		if runtime.GOOS == "linux" {
+			ifacePath := path.Join(GetHostSysFS(), "/class/net/") + io.Name
+
+			carrier, err := internal.ReadLines(ifacePath + "/carrier")
+			if err == nil {
+				carrier := strings.TrimSpace(carrier[0])
+				if carrier == "1" {
+					tags["carrier"] = "up"
+				} else {
+					tags["carrier"] = "down"
+				}
+			}
+
+			speed, err := internal.ReadLines(ifacePath + "/speed")
+			if err == nil {
+				speedUint64, err := strconv.ParseUint(strings.TrimSpace(speed[0]), 10, 64)
+				if err == nil {
+					tags["speed"] = speedUint64
+				}
+			}
+
+			duplex, err := internal.ReadLines(ifacePath + "/duplex")
+			if err == nil {
+				tags["duplex"] = strings.TrimSpace(duplex[0])
+			}
+		}
+
 		acc.AddCounter("net", fields, tags)
+
 	}
 
 	// Get system wide stats for different network protocols

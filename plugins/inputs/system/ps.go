@@ -1,6 +1,7 @@
 package system
 
 import (
+	sysnet "net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,8 @@ type PS interface {
 	DiskUsage(mountPointFilter []string, fstypeExclude []string) ([]*disk.UsageStat, []*disk.PartitionStat, error)
 	NetIO() ([]net.IOCountersStat, error)
 	NetProto() ([]net.ProtoCountersStat, error)
+	NetInterface(iface string) (*sysnet.Interface, error)
+	NetInterfaces() ([]sysnet.Interface, error)
 	DiskIO(names []string) (map[string]disk.IOCountersStat, error)
 	VMStat() (*mem.VirtualMemoryStat, error)
 	SwapStat() (*mem.SwapMemoryStat, error)
@@ -147,6 +150,14 @@ func (s *SystemPS) NetProto() ([]net.ProtoCountersStat, error) {
 
 func (s *SystemPS) NetIO() ([]net.IOCountersStat, error) {
 	return net.IOCounters(true)
+}
+
+func (s *SystemPS) NetInterfaces() ([]sysnet.Interface, error) {
+	return sysnet.Interfaces()
+}
+
+func (s *SystemPS) NetInterface(iface string) (*sysnet.Interface, error) {
+	return sysnet.InterfaceByName(iface)
 }
 
 func (s *SystemPS) NetConnections() ([]net.ConnectionStat, error) {
